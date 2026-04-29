@@ -1,0 +1,74 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      // Check if user is an admin by looking up the admins collection
+      // OR by checking the email for the bootstrapped admin
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.email == 'sanikagurav6530@gmail.com'
+      );
+    }
+
+    function isValidUser(data) {
+      return data.userId == request.auth.uid &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             data.email is string && data.email.size() > 0 && data.email.size() <= 100 &&
+             data.mobileNumber is string && data.mobileNumber.size() >= 0 && data.mobileNumber.size() <= 20 &&
+             data.role in ['user', 'admin'] &&
+             data.createdAt == request.time;
+    }
+
+    function isValidEnrollment(data) {
+      return data.userId == request.auth.uid &&
+             data.fullName is string && data.fullName.size() >= 2 && data.fullName.size() <= 100 &&
+             data.email is string && data.email == request.auth.token.email &&
+             data.phoneNumber is string && data.phoneNumber.size() >= 10 && data.phoneNumber.size() <= 15 &&
+             data.courseName is string && data.courseName.size() > 0 &&
+             data.timestamp == request.time;
+    }
+
+    // --- Collections ---
+    match /users/{userId} {
+      allow get: if isOwner(userId) || isAdmin();
+      allow list: if isAdmin();
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if (isOwner(userId) || isAdmin()) && 
+                    request.resource.data.userId == resource.data.userId &&
+                    request.resource.data.email == resource.data.email &&
+                    (
+                      // If user is owner, they can only update name
+                      (isOwner(userId) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name'])) ||
+                      // Admins can update role
+                      (isAdmin() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role']))
+                    );
+    }
+
+    match /enrollments/{enrollmentId} {
+      allow create: if isSignedIn() && isValidEnrollment(request.resource.data);
+      allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow update, delete: if isAdmin();
+    }
+
+    // Admins collection to store explicit admin UIDs
+    match /admins/{adminId} {
+      allow read: if isSignedIn();
+      allow write: if false; // Only manageable via console or specialized tool
+    }
+  }
+}
